@@ -1,0 +1,126 @@
+import requests
+import time
+import re
+import hashlib
+import urllib.parse
+import warnings
+warnings.filterwarnings("ignore")
+
+URI = "https://sapb.szosc.cn"
+HEADER = {
+    "Content-Type": "application/x-www-form-urlencoded",
+    "Host": "sapb.szosc.cn"
+}
+TODAY = time.strftime("%Y-%m-%d", time.localtime())
+HOSTNAME = "%E8%8B%8F%E5%B7%9E%E5%A5%A5%E6%9E%97%E5%8C%B9%E5%85%8B%E4%BD%93%E8%82%B2%E4%B8%AD%E5%BF%83"
+FIELDTYPE = "%E4%BD%93%E8%82%B2%E9%A6%86%E7%BE%BD%E6%AF%9B%E7%90%83%E8%AE%AD%E7%BB%83%E5%8E%85"
+CGXX = "%E4%BD%93%E8%82%B2%E9%A6%86%E5%81%A5%E8%BA%AB%E4%B8%AD%E5%BF%83"
+OPENID = "oi6_W5apAs-QLl9yb9DlcBfUgMjg"
+UNIONID = "o3eng1J8a0t3PBf4dSvpkQYsn0_E"
+
+SEVEN_OCLICK = "19:00:00"
+EIGHT_OCLICK = "20:00:00"
+
+def e(x):
+    return urllib.parse.quote(x)
+
+def get_session_id():
+    session = requests.Session()
+    url = "/index.php/wxplace/place/placelist/unionid/{}/openid/{}/cgxx/{}".format(UNIONID,OPENID, CGXX)
+    r = session.request("GET", URI+url, headers=HEADER, verify=False)
+    HEADER['Cookie'] = r.headers['Set-Cookie']
+
+
+def get_avaliable_place():
+    session = requests.Session()
+    url = "/index.php/wxplace/place/index/salevenue/{}/fieldtype/{}/cgxx/{}".format(HOSTNAME, FIELDTYPE, CGXX)
+    data = "fieldtype1={}&homename1={}&cgxx1={}&times={}".format(FIELDTYPE, HOSTNAME, CGXX, TODAY)
+    r = session.request("POST", URI+url, headers=HEADER, data=data, verify=False)
+    # 10 Badminton Court
+    seven_group = re.findall(r"choosetime1=='{} {}' &&(.*?)&&".format(target_date, SEVEN_OCLICK), r.text, flags=re.S)
+    eight_group = re.findall(r"choosetime1=='{} {}' &&(.*?)&&".format(target_date, EIGHT_OCLICK), r.text, flags=re.S)
+
+    avaliable_field = []
+
+    for i in range(10):
+        idx = str(i+1)
+        flag1 = 0
+        for group in seven_group:
+            if idx in group:
+                flag1 = 1
+                break
+        if flag1:
+            continue
+
+        for group in eight_group:
+            if idx in group:
+                flag1 = 1
+                break
+
+        if not flag1:
+            print("Badminton Court:{} is avaliable in {},{}".format(idx, SEVEN_OCLICK, EIGHT_OCLICK))
+            avaliable_field.append(idx)
+
+    if not len(avaliable_field):
+        print("no avaliable Badminton Court in {} {}".format(SEVEN_OCLICK, EIGHT_OCLICK))
+        return
+
+    return avaliable_field
+
+
+def order_confirm(avaliable_field):
+
+    idx = avaliable_field.pop()
+    print("ordering Badminton Court:{}".format(idx))
+    session = requests.session()
+    url = "/index.php/wxplace/place/pay"
+    field = urllib.parse.quote("19:00-20:00|{} {}|{}|55,20:00-21:00|{} {}|{}|55".format(target_date, SEVEN_OCLICK, idx, target_date, EIGHT_OCLICK, idx))
+    data = "price=110.00&fieldtype={}&homename={}&field={}&openid={}&unionid={}&limit=1.0000&agree=1".format(FIELDTYPE, HOSTNAME, field, OPENID, UNIONID)
+    # print(data)
+    r = session.request("POST", URI+url, headers=HEADER, data=data, verify=False)
+    # print(r.text)
+
+    bookholder = "%E6%9D%A8%E5%96%9C%E7%90%B4"
+    mobile = "13774153161"
+    outtradeno = re.findall(r"name=\"{}\" value=\"(.*?)\"".format("outtradeno"), r.text)[0]
+    fieldnum = re.findall(r"name=\"{}\" value=\"(.*?)\"".format("fieldnum"), r.text)[0]
+    starttime = re.findall(r"name=\"{}\" value=\"(.*?)\"".format("starttime"), r.text)[0]
+    bookinfo = re.findall(r"name=\"{}\" value=\"(.*?)\"".format("bookinfo"), r.text)[0]
+    uid = re.findall(r"name=\"{}\" value=\"(.*?)\"".format("uid"), r.text)[0]
+    dttoken1 = re.findall(r"name=\"{}\" value=\"(.*?)\"".format("dttoken1"), r.text)[0]
+
+    md5_string = OPENID + outtradeno + bookinfo + "110.00" + "Sport2022"
+    md5 = hashlib.md5()
+    md5.update(md5_string.encode())
+    sign1 ="126" +  md5.hexdigest()
+
+    vipCode = UNIONID
+    body = "%EF%BF%BD"
+    outTradeNo = re.findall(r"name=\"{}\" value=\"(.*?)\"".format("outTradeNo"), r.text)[0]
+
+    left_string = "&groupName=&balanceMethod=0&cashAmount=0&merchantCode=&groupVipId="
+
+    data = "bookholder={}&mobile={}&idno=&outtradeno={}&ordtotal_fee=110.00&homename={}&" \
+           "fieldtype={}&wxopenid={}&unionid={}&fieldnum={}&starttime={}&bookinfo={}&uid={}&" \
+           "paid=110.00&limit=1.0000&dttoken1={}&yhq=0.00&yhqid=0&sign1={}&payType=wechat&" \
+           "vipCode={}&body=%EF%BF%BD&outTradeNo={}&totalFee=110.00&groupName=&balanceMethod=0&" \
+           "cashAmount=0&merchantCode=&groupVipId=".format(bookholder, mobile, outtradeno, HOSTNAME,
+                                                           FIELDTYPE, OPENID, UNIONID, e(fieldnum), e(starttime), e(bookinfo), uid,
+                                                           dttoken1, sign1,
+                                                           UNIONID, outTradeNo)
+    url = "/index.php/yinlian/index/pay"
+    r = session.request("POST", URI+url, headers=HEADER, data=data, verify=False)
+    if "支付成功！" in r.text:
+        print("Badminton Court:{} {},{} order success".format(idx, SEVEN_OCLICK, EIGHT_OCLICK))
+
+
+if __name__ == "__main__":
+    global target_date
+    target_date="2021-12-01"
+    get_session_id()
+    for i in range(2):
+        avaliable_field = get_avaliable_place()
+        if avaliable_field:
+            order_confirm(avaliable_field)
+            print("waiting for 20 seconds for ordering another Badminton Court")
+        time.sleep(20)
